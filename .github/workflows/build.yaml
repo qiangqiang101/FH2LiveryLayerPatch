@@ -82,7 +82,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
-          ZIP: ${{ steps.name.outputs.name }}.zip
+          # Not ZIP: Info-ZIP's zip reads $ZIP as extra command-line options.
+          ARCHIVE: ${{ steps.name.outputs.name }}.zip
         run: |
-          (cd build/dist && zip -r -9 "../../$ZIP" .)
-          gh release upload "$TAG" "$ZIP" --repo "$GITHUB_REPOSITORY" --clobber
+          (cd build/dist && zip -r -9 "$GITHUB_WORKSPACE/$ARCHIVE" .)
+          gh release upload "$TAG" "$ARCHIVE" --repo "$GITHUB_REPOSITORY" --clobber
