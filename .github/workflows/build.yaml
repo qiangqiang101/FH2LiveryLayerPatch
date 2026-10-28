@@ -1,0 +1,88 @@
+name: Build
+
+# Runs only when a release is published, or by hand (Actions > Build > Run workflow).
+# A release gets LiveryLayerPatch-<tag>.zip attached; a manual run uploads the
+# same files as a workflow artifact.
+#
+# The zip has the platform only as DWrite.dll: Azimuth 1.0.3 doesn't load
+# d3dcompiler_47.dll.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # attach the zip to the release
+    env:
+      LLVM_MINGW_VERSION: "20260922"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install llvm-mingw + ninja
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+          curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64.tar.xz" -o llvm-mingw.tar.xz
+          sudo mkdir -p /opt/llvm-mingw
+          sudo tar -xJf llvm-mingw.tar.xz -C /opt/llvm-mingw --strip-components=1
+
+      - name: Name the build
+        id: name
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          # The version in CMakeLists.txt is what the mod reports; a release tag has to match it.
+          version=$(sed -n 's/^project([^ ]* VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "CMakeLists.txt version: $version"
+          if [ "$GITHUB_EVENT_NAME" = release ]; then
+            if [ "${TAG#[vV]}" != "$version" ]; then
+              echo "::error::Release tag $TAG doesn't match VERSION $version in CMakeLists.txt; bump it first."
+              exit 1
+            fi
+            echo "name=LiveryLayerPatch-$TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=LiveryLayerPatch-v${version}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_TOOLCHAIN_FILE="$PWD/platform/cmake/mingw-w64-x86_64.cmake"
+          cmake --build build --target dist
+
+      - name: Check the archive's contents
+        run: |
+          cd build/dist
+          find . -type f | sort
+          test -f DWrite.dll
+          test -f fh2-mods/LiveryLayerPatch.dll
+          if find . -iname 'd3dcompiler_47.dll' | grep -q .; then
+            echo "::error::d3dcompiler_47.dll must not be in the archive"
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.name }}
+          path: build/dist/
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          ZIP: ${{ steps.name.outputs.name }}.zip
+        run: |
+          (cd build/dist && zip -r -9 "../../$ZIP" .)
+          gh release upload "$TAG" "$ZIP" --repo "$GITHUB_REPOSITORY" --clobber
